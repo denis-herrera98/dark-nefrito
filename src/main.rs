@@ -1,7 +1,6 @@
-mod interpreter;
 mod commands;
+mod interpreter;
 
-use std::collections::HashSet;
 use std::env;
 use std::sync::Arc;
 
@@ -9,13 +8,18 @@ use serenity::async_trait;
 use serenity::client::bridge::gateway::ShardManager;
 use serenity::framework::standard::macros::group;
 use serenity::framework::StandardFramework;
-use serenity::http::Http;
 use serenity::model::event::ResumedEvent;
 use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 use tracing::{error, info};
+use songbird::{
+    driver::DecodeMode,
+    Config,
+    SerenityInit,
+};
 
 use crate::commands::voice::*;
+use crate::commands::test::*;
 
 pub struct ShardManagerContainer;
 
@@ -37,62 +41,37 @@ impl EventHandler for Handler {
 }
 
 #[group]
-#[commands(join_channel)]
+#[commands(join, multiply)]
 struct General;
 
 #[tokio::main]
 async fn main() {
-    // This will load the environment variables located at `./.env`, relative to
-    // the CWD. See `./.env.example` for an example on how to structure this.
+      // interpreter::start_model().unwrap();
     dotenv::dotenv().expect("Failed to load .env file");
-
-    // Initialize the logger to use environment variables.
-    //
-    // In this case, a good default is setting the environment variable
-    // `RUST_LOG` to `debug`.
     tracing_subscriber::fmt::init();
 
     let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+    let prefix = "n!";
+    let framework = StandardFramework::new()
+        .configure(|c| c
+            .prefix(prefix))
+        .group(&GENERAL_GROUP);
 
-    let http = Http::new(&token);
-
-    // We will fetch your bot's owners and id
-    let (owners, _bot_id) = match http.get_current_application_info().await {
-        Ok(info) => {
-            let mut owners = HashSet::new();
-            owners.insert(info.owner.id);
-
-            (owners, info.id)
-        },
-        Err(why) => panic!("Could not access application info: {:?}", why),
-    };
-
-    // Create the framework
-    let framework =
-        StandardFramework::new().configure(|c| c.owners(owners).prefix("~")).group(&GENERAL_GROUP);
-
-    let intents = GatewayIntents::GUILD_MESSAGES
-        | GatewayIntents::DIRECT_MESSAGES
+    let intents = GatewayIntents::non_privileged()
         | GatewayIntents::MESSAGE_CONTENT;
+
+    // Here, we need to configure Songbird to decode all incoming voice packets.
+    // If you want, you can do this on a per-call basis---here, we need it to
+    // read the audio data that other people are sending us!
+    let songbird_config = Config::default()
+        .decode_mode(DecodeMode::Decode);
+
     let mut client = Client::builder(&token, intents)
-        .framework(framework)
         .event_handler(Handler)
+        .framework(framework)
+        .register_songbird_from_config(songbird_config)
         .await
         .expect("Err creating client");
 
-    {
-        let mut data = client.data.write().await;
-        data.insert::<ShardManagerContainer>(client.shard_manager.clone());
-    }
-
-    let shard_manager = client.shard_manager.clone();
-
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.expect("Could not register ctrl+c handler");
-        shard_manager.lock().await.shutdown_all().await;
-    });
-
-    if let Err(why) = client.start().await {
-        error!("Client error: {:?}", why);
-    }
+    let _ = client.start().await.map_err(|why| println!("Client ended: {:?}", why));
 }

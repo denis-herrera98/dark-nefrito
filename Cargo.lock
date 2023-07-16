@@ -42,12 +42,14 @@ version = "0.1.0"
 dependencies = [
  "dotenv",
  "hound",
+ "lazy_static",
  "serde",
  "serde_json",
  "serenity",
  "songbird",
  "tokio",
  "tracing",
+ "tracing-futures",
  "tracing-subscriber",
  "vosk",
 ]
