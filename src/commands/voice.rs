@@ -4,8 +4,9 @@ use vosk::{Model, Recognizer};
 use hound::WavReader;
 use std::fs::File;
 use std::io::{self, Write, BufReader};
+use std::sync::RwLock;
+use hound::WavWriter;
 
-// ----- 
 
 use serenity::model::prelude::*;
 use serenity::Result as SerenityResult;
@@ -31,7 +32,12 @@ use songbird::{
     EventContext,
     EventHandler as VoiceEventHandler,
 };
+
 struct Receiver;
+
+lazy_static! {
+    static ref ALL_AUDIO: RwLock<Vec<i16>> = RwLock::new(Vec::new());
+}
 
 impl Receiver {
     pub fn new() -> Self {
@@ -49,7 +55,10 @@ impl RecognizerSingleton {
     fn new() -> Self {
         let model_path = "/home/denisherrera/Documents/models/vosk-model-es-0.42";
         let model = Model::new(model_path).expect("Failed to load model");
-        let recognizer = Recognizer::new(&model, 44100.0).unwrap();
+        let mut recognizer = Recognizer::new(&model, 96000.0).unwrap();
+        recognizer.set_max_alternatives(3);
+        recognizer.set_words(true);
+        recognizer.set_partial_words(true);
 
         Self {
             recognizer: Mutex::new(recognizer),
@@ -100,15 +109,46 @@ impl VoiceEventHandler for Receiver {
                     data.ssrc,
                     if data.speaking {"started"} else {"stopped"},
                 );
+
+                if data.speaking == false {
+                    println!(
+                        "Source {} stop speaking. Everything he said",
+                        data.ssrc,
+                    );
+
+                   // let read_lock = ALL_AUDIO.read().unwrap();
+                   // let recognizer = RecognizerSingleton::get_instance().lock().unwrap();
+
+                   // println!(
+                   //     "SIZE OF THE ARRAY {} ",
+                   //     read_lock.len()
+                   // );
+//
+//                    if read_lock.len() > (44100 * 1000000) / 4000 {
+//                        for sample in read_lock.chunks(4000) {
+//                            recognizer.accept_waveform(sample);
+//                            println!("SAMPLE SAMPLE SAMPLE {:?}", sample);
+//                            println!("LENGTH LENGTH LENGTH {:?}", sample.len());
+//                            println!("{:#?}", recognizer.partial_result());
+//                        }
+//                        // println!("{:#?}", recognizer.final_result().multiple().unwrap());
+//
+//                    } else {
+//                        println!("NOT ENOUGH SAMPLES");
+//                    }
+//
+                }
+
             },
             Ctx::VoicePacket(data) => {
                 // An event which fires for every received audio packet,
                 // containing the decoded data.
+                //
                 if let Some(audio) = data.audio {
                     // RecognizerSingleton::accept_waveform(audio.get(..5.min(audio.len())).unwrap());
-                    let mut recognizer = RecognizerSingleton::get_instance().lock().unwrap();
-                    recognizer.accept_waveform(audio);
-                    println!("{:#?}", recognizer.partial_result());
+//                    let mut recognizer = RecognizerSingleton::get_instance().lock().unwrap();
+//                   recognizer.accept_waveform(audio);
+//                    println!("{:#?}", recognizer.partial_result());
 //                    println!("Audio packet's first 5 samples: {:?}", audio.get(..5.min(audio.len())));
 //                    println!(
 //                        "Audio packet sequence {:05} has {:04} bytes (decompressed from {}), SSRC {}",
@@ -117,6 +157,25 @@ impl VoiceEventHandler for Receiver {
 //                        data.packet.payload.len(),
 //                        data.packet.ssrc,
 //                    );
+
+                    //data.packet.payload;
+                    if audio.len() != 0 {
+                        let mut write_lock = ALL_AUDIO.write().unwrap();
+                        write_lock.extend(audio);
+                    }
+                    // let read_lock = ALL_AUDIO.read().unwrap();
+                   // let mut recognizer = RecognizerSingleton::get_instance().lock().unwrap();
+
+                   // if read_lock.len() > (48000 * 2000) / 4000 {
+                   //     for sample in read_lock.chunks(4000) {
+                   //         recognizer.accept_waveform(sample);
+                   //         println!("{:#?}", recognizer.partial_result());
+                   //     }
+                   // }
+
+//                    let contains_number = audio.iter().any(|&x| x == 0);
+//                    if !contains_number {
+//                    }
                 } else {
                     println!("RTP packet, but no audio. Driver may not be configured to decode.");
                 }
@@ -135,8 +194,10 @@ impl VoiceEventHandler for Receiver {
                 // first speaking.
 
                 println!("Client disconnected: user {:?}", user_id);
-                let mut recognizer = RecognizerSingleton::get_instance().lock().unwrap();
-                println!("{:#?}", recognizer.final_result().multiple().expect("IMPOSIBLE TO UNWRAP"));
+                // let mut recognizer = RecognizerSingleton::get_instance().lock().unwrap();
+//                println!("{:#?}", recognizer.final_result().multiple().expect("IMPOSIBLE TO UNWRAP"));
+
+
             },
             _ => {
                 // We won't be registering this struct for any more event classes.
@@ -151,6 +212,7 @@ impl VoiceEventHandler for Receiver {
 #[command]
 #[only_in(guilds)]
 async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+//    RecognizerSingleton::get_instance();
     let connect_to = match args.single::<u64>() {
         Ok(id) => ChannelId(id),
         Err(_) => {
@@ -205,6 +267,69 @@ async fn join(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
     Ok(())
 
 }
+
+
+
+#[command]
+#[only_in(guilds)]
+async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild = msg.guild(&ctx.cache).unwrap();
+    let guild_id = guild.id;
+
+    let manager = songbird::get(ctx).await
+        .expect("Songbird Voice client placed in at initialisation.").clone();
+    let has_handler = manager.get(guild_id).is_some();
+
+    if has_handler {
+        if let Err(e) = manager.remove(guild_id).await {
+            check_msg(msg.channel_id.say(&ctx.http, format!("Failed: {:?}", e)).await);
+        }
+
+        check_msg(msg.channel_id.say(&ctx.http, "Left voice channel").await);
+
+        let read_lock = ALL_AUDIO.read().unwrap();
+        println!("LENGTH LENGTH READ LOCK{:?}", read_lock.len());
+        let mut recognizer = RecognizerSingleton::get_instance().lock().unwrap();
+
+
+        let mut wav_write = WavWriter::create("/home/denisherrera/Documents/alma-negra/data/loco.wav",
+            hound::WavSpec {
+            bits_per_sample: 16,
+            channels: 1,
+            sample_format: hound::SampleFormat::Int,
+            sample_rate: 96000,
+        }).unwrap();
+
+        for sample in read_lock.chunks(2000) {
+            recognizer.accept_waveform(sample);
+        }
+
+
+        let result = recognizer.final_result().multiple().unwrap();
+        let best_alternative = &result.alternatives[0];
+        let text = best_alternative.text;
+       
+        // check_msg(msg.reply(ctx, text).await);
+        // check_msg(msg.channel_id.say(&ctx.http,"text").await);
+        // check_msg(msg.reply(ctx, text).await));
+        println!("{:#?}", &result.alternatives);
+        // println!("{}", text);
+        //
+        
+        println!("STARTING WRITING FILE");
+        for sample in read_lock.iter() {
+            wav_write.write_sample(*sample).ok();
+        }
+        println!("FINALIZED WRITING FILE");
+        wav_write.finalize().ok();
+
+    } else {
+        check_msg(msg.reply(ctx, "Not in a voice channel").await);
+    }
+
+    Ok(())
+}
+
 
 /// Checks that a message successfully sent; if not, then logs why to stdout.
 fn check_msg(result: SerenityResult<Message>) {
